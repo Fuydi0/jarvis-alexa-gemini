@@ -1,0 +1,38 @@
+# Secrets — à NE JAMAIS commiter
+.env
+.env.*
+*.key
+*secret*
+credentials.json
+config.local.*
+
+# Configurations locales ASK CLI / déploiement (peuvent contenir des skill IDs persos)
+.ask/
+ask-states.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+ENV/
+
+# IDE / éditeurs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Builds
+build/
+dist/
+node_modules/
