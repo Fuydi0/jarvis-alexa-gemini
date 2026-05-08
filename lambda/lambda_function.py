@@ -39,6 +39,11 @@ GEMINI_MODELS = [
     "gemini-2.5-flash",            # fallback 2 — plus puissant, ~500/jour
 ]
 
+# Timeout par appel à Gemini. Calculé pour que la cascade complète tienne
+# dans le timeout Lambda configuré (30s) avec une marge confortable :
+# 3 modèles × 8s = 24s max, + traitement Alexa = OK.
+GEMINI_TIMEOUT_SECONDS = 8
+
 GEMINI_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "{model}:generateContent"
@@ -124,7 +129,8 @@ def _call_gemini_model(model, payload, headers):
     url = GEMINI_URL_TEMPLATE.format(model=model)
     try:
         response = requests.post(
-            url, headers=headers, data=json.dumps(payload), timeout=8
+            url, headers=headers, data=json.dumps(payload),
+            timeout=GEMINI_TIMEOUT_SECONDS,
         )
     except requests.Timeout as exc:
         logger.error("Timeout Gemini (%s) : %s", model, exc)
