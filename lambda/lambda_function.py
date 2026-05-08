@@ -29,11 +29,19 @@ from ask_sdk_model.dialog import ElicitSlotDirective
 
 # Remplace YOUR_API_KEY par ta clé Gemini
 GEMINI_API_KEY = "YOUR_API_KEY"
-GEMINI_MODEL = "gemini-2.5-flash-lite"
 
-GEMINI_URL = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
+# Cascade de modèles : si le premier renvoie 429 (quota dépassé), on bascule
+# automatiquement sur le suivant. Les quotas sont séparés par modèle dans
+# le tier gratuit, donc cette cascade triple le quota effectif quotidien.
+GEMINI_MODELS = [
+    "gemini-2.5-flash-lite",       # primaire — 1500 req/jour gratuites
+    "gemini-flash-lite-latest",    # fallback 1 — alias, quota séparé
+    "gemini-2.5-flash",            # fallback 2 — plus puissant, ~500/jour
+]
+
+GEMINI_URL_TEMPLATE = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "{model}:generateContent"
 )
 
 SYSTEM_INSTRUCTION = (
@@ -107,9 +115,64 @@ def _build_gemini_payload(chat_history, new_question):
     }
 
 
+def _call_gemini_model(model, payload, headers):
+    """Appelle un modèle Gemini précis. Renvoie un tuple (status, value) :
+    - ('ok', texte)        → réponse réussie
+    - ('quota', None)      → 429, à retenter avec un autre modèle
+    - ('error', message)   → erreur définitive, ne pas retenter
+    """
+    url = GEMINI_URL_TEMPLATE.format(model=model)
+    try:
+        response = requests.post(
+            url, headers=headers, data=json.dumps(payload), timeout=8
+        )
+    except requests.Timeout as exc:
+        logger.error("Timeout Gemini (%s) : %s", model, exc)
+        return ("error", ERROR_TIMEOUT)
+    except requests.ConnectionError as exc:
+        logger.error("Erreur de connexion Gemini (%s) : %s", model, exc)
+        return ("error", ERROR_NETWORK)
+    except requests.RequestException as exc:
+        logger.error("Erreur réseau Gemini (%s) : %s", model, exc)
+        return ("error", ERROR_NETWORK)
+
+    if response.status_code == 429:
+        logger.warning("Quota épuisé sur %s — fallback vers le modèle suivant", model)
+        return ("quota", None)
+
+    if not response.ok:
+        logger.error("Gemini HTTP %s (%s) : %s", response.status_code, model, response.text)
+        if response.status_code in (401, 403):
+            return ("error", ERROR_AUTH)
+        if response.status_code == 404:
+            return ("error", ERROR_MODEL_NOT_FOUND)
+        if response.status_code >= 500:
+            return ("error", ERROR_GEMINI_SERVER)
+        return ("error", ERROR_GENERIC)
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.error("Réponse Gemini non-JSON (%s) : %s — corps: %s", model, exc, response.text)
+        return ("error", ERROR_GENERIC)
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        logger.error("Gemini n'a renvoyé aucun candidat (%s) — corps: %s", model, data)
+        return ("error", ERROR_EMPTY_RESPONSE)
+
+    try:
+        return ("ok", candidates[0]["content"]["parts"][0]["text"].strip())
+    except (KeyError, IndexError, TypeError) as exc:
+        logger.error("Réponse Gemini inattendue (%s) : %s — corps: %s", model, exc, data)
+        return ("error", ERROR_EMPTY_RESPONSE)
+
+
 def generate_gemini_response(chat_history, new_question):
-    """Appelle Gemini et renvoie le texte de la réponse, ou un message
-    d'erreur ciblé selon le type de problème rencontré."""
+    """Tente la cascade de modèles définie dans GEMINI_MODELS. Si tous
+    renvoient 429, retourne ERROR_QUOTA. Toute autre erreur stoppe la
+    cascade immédiatement (pas la peine de retenter sur un autre modèle
+    pour une clé invalide ou un problème réseau)."""
     if GEMINI_API_KEY in (None, "", "YOUR_API_KEY"):
         logger.error("GEMINI_API_KEY n'est pas configurée")
         return ERROR_AUTH
@@ -117,50 +180,16 @@ def generate_gemini_response(chat_history, new_question):
     payload = _build_gemini_payload(chat_history, new_question)
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
 
-    try:
-        response = requests.post(
-            GEMINI_URL, headers=headers, data=json.dumps(payload), timeout=8
-        )
-    except requests.Timeout as exc:
-        logger.error("Timeout Gemini : %s", exc)
-        return ERROR_TIMEOUT
-    except requests.ConnectionError as exc:
-        logger.error("Erreur de connexion Gemini : %s", exc)
-        return ERROR_NETWORK
-    except requests.RequestException as exc:
-        logger.error("Erreur réseau Gemini : %s", exc)
-        return ERROR_NETWORK
+    for model in GEMINI_MODELS:
+        status, value = _call_gemini_model(model, payload, headers)
+        if status == "ok":
+            return value
+        if status == "error":
+            return value
+        # status == "quota" → on continue la cascade
 
-    if not response.ok:
-        logger.error("Gemini HTTP %s : %s", response.status_code, response.text)
-        if response.status_code == 429:
-            return ERROR_QUOTA
-        if response.status_code in (401, 403):
-            return ERROR_AUTH
-        if response.status_code == 404:
-            return ERROR_MODEL_NOT_FOUND
-        if response.status_code >= 500:
-            return ERROR_GEMINI_SERVER
-        return ERROR_GENERIC
-
-    try:
-        data = response.json()
-    except ValueError as exc:
-        logger.error("Réponse Gemini non-JSON : %s — corps: %s", exc, response.text)
-        return ERROR_GENERIC
-
-    # Détection des cas où Gemini bloque la réponse (filtres de sécurité,
-    # absence de candidats, etc.)
-    candidates = data.get("candidates") or []
-    if not candidates:
-        logger.error("Gemini n'a renvoyé aucun candidat — corps: %s", data)
-        return ERROR_EMPTY_RESPONSE
-
-    try:
-        return candidates[0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError, TypeError) as exc:
-        logger.error("Réponse Gemini inattendue : %s — corps: %s", exc, data)
-        return ERROR_EMPTY_RESPONSE
+    logger.error("Tous les modèles Gemini ont renvoyé 429")
+    return ERROR_QUOTA
 
 
 class LaunchRequestHandler(AbstractRequestHandler):

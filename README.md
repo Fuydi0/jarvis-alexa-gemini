@@ -111,8 +111,10 @@ Pour effacer la mémoire en cours de session : `oublie tout`.
 
 ## Coûts
 
-Zéro. Le tier gratuit Gemini donne 1 500 requêtes/jour, Alexa-Hosted est
-illimité gratuit pour les skills perso.
+Zéro. Le tier gratuit Gemini donne ~1 500 requêtes/jour par modèle.
+Comme Jarvis bascule automatiquement entre 3 modèles en cas de quota
+dépassé, le quota effectif est multiplié. Alexa-Hosted est illimité
+gratuit pour les skills perso.
 
 ## Limites
 
@@ -126,8 +128,11 @@ illimité gratuit pour les skills perso.
 - **Wake phrase** : `invocationName` dans [models/fr-FR.json](models/fr-FR.json),
   rebuild le modèle après
 - **Personnalité** : `SYSTEM_INSTRUCTION` dans [lambda/lambda_function.py](lambda/lambda_function.py)
-- **Modèle Gemini** : `GEMINI_MODEL` dans le même fichier (défaut :
-  `gemini-2.5-flash-lite`)
+- **Modèles Gemini** : `GEMINI_MODELS` dans le même fichier. Liste de
+  modèles essayés en cascade : si le premier renvoie quota épuisé (HTTP
+  429), Lambda bascule automatiquement sur le suivant. Les quotas sont
+  séparés par modèle dans le tier gratuit, donc cette cascade triple le
+  quota effectif quotidien.
 
 ## Dépannage
 
