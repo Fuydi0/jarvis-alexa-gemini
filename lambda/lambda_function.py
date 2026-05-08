@@ -46,8 +46,35 @@ SYSTEM_INSTRUCTION = (
 LAUNCH_MESSAGE = "Jarvis à ton écoute. Pose ta question."
 EXIT_MESSAGE = "À la prochaine."
 REPROMPT_MESSAGE = "Tu peux poser une autre question, ou dire stop pour arrêter."
-ERROR_MESSAGE = "Désolé, j'ai eu un souci. Tu peux reformuler ?"
 CLEAR_MESSAGE = "Mémoire effacée. De quoi on parle ?"
+
+# Messages d'erreur ciblés pour savoir d'un coup d'oreille ce qui cloche
+ERROR_QUOTA = (
+    "Limite de quota Gemini atteinte. Le quota gratuit se réinitialise "
+    "à minuit, heure du Pacifique."
+)
+ERROR_AUTH = (
+    "Problème d'authentification avec Gemini. La clé API est invalide ou "
+    "expirée."
+)
+ERROR_MODEL_NOT_FOUND = (
+    "Le modèle Gemini configuré n'existe pas. Il faut mettre à jour le "
+    "nom du modèle dans le code."
+)
+ERROR_GEMINI_SERVER = (
+    "Le serveur Gemini ne répond pas correctement. Réessaie dans quelques "
+    "instants."
+)
+ERROR_NETWORK = (
+    "Problème de connexion réseau. Réessaie dans quelques instants."
+)
+ERROR_TIMEOUT = (
+    "Gemini a mis trop de temps à répondre. Réessaie."
+)
+ERROR_EMPTY_RESPONSE = (
+    "Gemini n'a renvoyé aucune réponse. Reformule ta question."
+)
+ERROR_GENERIC = "Désolé, j'ai eu un souci. Tu peux reformuler ?"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -81,9 +108,11 @@ def _build_gemini_payload(chat_history, new_question):
 
 
 def generate_gemini_response(chat_history, new_question):
+    """Appelle Gemini et renvoie le texte de la réponse, ou un message
+    d'erreur ciblé selon le type de problème rencontré."""
     if GEMINI_API_KEY in (None, "", "YOUR_API_KEY"):
         logger.error("GEMINI_API_KEY n'est pas configurée")
-        return "La clé API Gemini n'est pas configurée."
+        return ERROR_AUTH
 
     payload = _build_gemini_payload(chat_history, new_question)
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
@@ -92,20 +121,46 @@ def generate_gemini_response(chat_history, new_question):
         response = requests.post(
             GEMINI_URL, headers=headers, data=json.dumps(payload), timeout=8
         )
+    except requests.Timeout as exc:
+        logger.error("Timeout Gemini : %s", exc)
+        return ERROR_TIMEOUT
+    except requests.ConnectionError as exc:
+        logger.error("Erreur de connexion Gemini : %s", exc)
+        return ERROR_NETWORK
     except requests.RequestException as exc:
         logger.error("Erreur réseau Gemini : %s", exc)
-        return ERROR_MESSAGE
+        return ERROR_NETWORK
 
     if not response.ok:
         logger.error("Gemini HTTP %s : %s", response.status_code, response.text)
-        return ERROR_MESSAGE
+        if response.status_code == 429:
+            return ERROR_QUOTA
+        if response.status_code in (401, 403):
+            return ERROR_AUTH
+        if response.status_code == 404:
+            return ERROR_MODEL_NOT_FOUND
+        if response.status_code >= 500:
+            return ERROR_GEMINI_SERVER
+        return ERROR_GENERIC
 
     try:
         data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError, ValueError) as exc:
-        logger.error("Réponse Gemini inattendue : %s — corps: %s", exc, response.text)
-        return ERROR_MESSAGE
+    except ValueError as exc:
+        logger.error("Réponse Gemini non-JSON : %s — corps: %s", exc, response.text)
+        return ERROR_GENERIC
+
+    # Détection des cas où Gemini bloque la réponse (filtres de sécurité,
+    # absence de candidats, etc.)
+    candidates = data.get("candidates") or []
+    if not candidates:
+        logger.error("Gemini n'a renvoyé aucun candidat — corps: %s", data)
+        return ERROR_EMPTY_RESPONSE
+
+    try:
+        return candidates[0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        logger.error("Réponse Gemini inattendue : %s — corps: %s", exc, data)
+        return ERROR_EMPTY_RESPONSE
 
 
 class LaunchRequestHandler(AbstractRequestHandler):
@@ -225,7 +280,7 @@ class CatchAllExceptionHandler(AbstractExceptionHandler):
         logger.error(exception, exc_info=True)
         return (
             handler_input.response_builder
-            .speak(ERROR_MESSAGE)
+            .speak(ERROR_GENERIC)
             .ask(REPROMPT_MESSAGE)
             .add_directive(_elicit_query_directive())
             .response

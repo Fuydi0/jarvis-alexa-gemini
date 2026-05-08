@@ -131,12 +131,21 @@ illimité gratuit pour les skills perso.
 
 ## Dépannage
 
-| Erreur dans CloudWatch | Cause | Fix |
+Jarvis te dit directement à l'oral ce qui cloche :
+
+| Ce que dit Jarvis | Cause | Fix |
 |---|---|---|
-| `HTTP 429` | Quota épuisé | Attendre |
-| `HTTP 404 model not found` | Modèle retiré | Changer `GEMINI_MODEL` |
-| `HTTP 400` | Clé invalide | Régénérer la clé |
-| `ImportError urllib3` | OpenSSL trop vieux | Vérifier `urllib3<2` |
+| « Limite de quota Gemini atteinte » | 1 500 req/jour dépassées | Attendre minuit (Pacifique) |
+| « Problème d'authentification » | Clé invalide ou expirée | Régénérer la clé |
+| « Le modèle Gemini configuré n'existe pas » | Modèle retiré par Google | Changer `GEMINI_MODEL` |
+| « Le serveur Gemini ne répond pas » | Panne côté Google | Réessayer plus tard |
+| « Problème de connexion réseau » | Lambda n'a pas pu joindre Google | Réessayer |
+| « Gemini a mis trop de temps » | Timeout (8 s) | Réessayer |
+| « Gemini n'a renvoyé aucune réponse » | Filtre de sécurité Google | Reformuler la question |
+| « J'ai eu un souci » | Erreur inattendue | Voir CloudWatch Logs |
+
+Pour les erreurs au démarrage de la Lambda (`ImportError urllib3` etc.),
+voir les CloudWatch Logs depuis l'onglet Code de la console Alexa.
 
 ## Crédits
 
